@@ -1,5 +1,5 @@
 def get_img_array(img_path, size):
-    img = tf.keras.preprocessing.image.load_img(img_path, target_size=(256,256,3))
+    img = tf.keras.preprocessing.image.load_img(img_path, target_size=(224,224,3))
     array = tf.keras.preprocessing.image.img_to_array(img)
     # We add a dimension to transform our array into a "batch"
     # of size "size"
@@ -76,7 +76,7 @@ preprocess_input = tf.keras.applications.mobilenet_v2.preprocess_input
 decode_predictions = tf.keras.applications.mobilenet_v2.decode_predictions
 
 last_conv_layer_name = "conv1d_1 (Conv1D)"
-img_size = (256,256)
+img_size = (224,224)
 
 # Remove last layer's softmax
 model.layers[-1].ativation = None
