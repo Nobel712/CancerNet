@@ -210,9 +210,10 @@ def CancerNet_model(input_shape=(224, 224, 3)):
 
     # Merge both paths
     merged = layers.Concatenate(axis=-1)([flat_path, alt_path])
+    x = keras.layers.GlobalAveragePooling1D()(merged)
 
     # Final output
-    output = layers.Conv2D(nclasses, (1, 1), activation='sigmoid/softmax')(merged)
+    output = layers.Conv2D(nclasses, (1, 1), activation='sigmoid/softmax')(x)
 
     model = keras.Model(inputs=inputs, outputs=outputs, name="CancerNet")
 
