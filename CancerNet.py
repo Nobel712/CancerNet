@@ -141,79 +141,81 @@ model = keras.Model(inputs=inputs, outputs=outputs, name="CancerNet")
 
 ####################################################################################
 
-
-
-class Involution(layers.Layer):
-    """ Involution Layer: Inspired by the 'Involution: Inverting the Inherence of Convolution' paper. """
-    def __init__(self, channels, kernel_size=3, stride=1):
-        super(Involution, self).__init__()
-        self.kernel_size = kernel_size
-        self.stride = stride
-        self.channels = channels
-        self.conv1 = layers.Conv2D(channels, 1)  # 1x1 Conv for Channel Mixing
-        self.conv2 = layers.Conv2D(kernel_size ** 2, 1)  # Kernel Generator
-
-    def call(self, x):
-        batch_size, height, width, channels = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], tf.shape(x)[3]
-        weights = self.conv2(x)  
-        weights = tf.reshape(weights, [batch_size, height, width, self.kernel_size, self.kernel_size, 1])
-        x_unfold = tf.image.extract_patches(x, [1, self.kernel_size, self.kernel_size, 1], 
-                                            [1, self.stride, self.stride, 1], [1, 1, 1, 1], padding="SAME")
-        x_unfold = tf.reshape(x_unfold, [batch_size, height, width, self.kernel_size, self.kernel_size, channels])
-        x = tf.reduce_sum(weights * x_unfold, axis=[3, 4])
-        x = self.conv1(x)
-        return x
-
-
-class TransformerBlock(layers.Layer):
-    """ Transformer Block: Implements a self-attention mechanism followed by an MLP block. """
-    def __init__(self, dim, num_heads=4, mlp_dim=256, dropout=0.1):
+class TransformerBlock(tf.keras.layers.Layer):
+    def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1):
         super(TransformerBlock, self).__init__()
-        self.norm1 = layers.LayerNormalization()
-        self.attn = layers.MultiHeadAttention(num_heads=num_heads, key_dim=dim, dropout=dropout)
-        self.norm2 = layers.LayerNormalization()
-        self.mlp = tf.keras.Sequential([
-            layers.Dense(mlp_dim, activation='relu'),
-            layers.Dense(dim)
+        self.att = layers.MultiHeadAttention(num_heads=num_heads, key_dim=embed_dim)
+        self.ffn = tf.keras.Sequential([
+            layers.Dense(ff_dim, activation='relu'),
+            layers.Dense(embed_dim),
         ])
+        self.layernorm1 = layers.LayerNormalization(epsilon=1e-6)
+        self.layernorm2 = layers.LayerNormalization(epsilon=1e-6)
+        self.dropout1 = layers.Dropout(rate)
+        self.dropout2 = layers.Dropout(rate)
 
-    def call(self, x):
-        attn_out = self.attn(x, x)
-        x = self.norm1(x + attn_out)  # Residual Connection
-        mlp_out = self.mlp(x)
-        x = self.norm2(x + mlp_out)  # Residual Connection
-        return x
+    def call(self, inputs, training=False):
+        attn_output = self.att(inputs, inputs)
+        attn_output = self.dropout1(attn_output, training=training)
+        out1 = self.layernorm1(inputs + attn_output)
+        ffn_output = self.ffn(out1)
+        ffn_output = self.dropout2(ffn_output, training=training)
+        return self.layernorm2(out1 + ffn_output)
 
 
-def build_model(input_shape=(224, 224, 3), num_classes=10):
+def CancerNet_model(input_shape=(224, 224, 3)):
     inputs = layers.Input(shape=input_shape)
 
-    # **Step 1: Convolution → Activation**
-    x = layers.Conv2D(64, (3, 3), padding="same")(inputs)
-    x = layers.ReLU()(x)
+    # Convolution Block
+    x = layers.Conv2D(32, (3, 3), activation='relu', padding='same')(inputs)
+    x = layers.Conv2D(64, (3, 3), activation='relu', padding='same')(x)
 
-    # **Step 2: MaxPool → Convolution → Activation**
-    x = layers.MaxPooling2D((2, 2))(x)
-    x = layers.Conv2D(128, (3, 3), padding="same")(x)
-    x = layers.ReLU()(x)
+    # Involution Block
+    x, kernel1 = Involution(
+    channel=64, group_number=1, kernel_size=3, stride=1, reduction_ratio=2, name="inv_1")(x)
+    x = keras.layers.ReLU()(x)
+    x = keras.layers.MaxPooling2D((2, 2))(x)
+    
+    x, kernel2 = Involution(
+        channel=64, group_number=1, kernel_size=3, stride=1, reduction_ratio=2, name="inv_2")(x)
+    x = keras.layers.ReLU()(x)
+    x = keras.layers.MaxPooling2D((2, 2))(x)
+    
+    x, kernel3 = Involution(
+        channel=64, group_number=1, kernel_size=3, stride=1, reduction_ratio=2, name="inv_3")(x)
+    x = keras.layers.ReLU()(x)
 
-    # **Step 3: MaxPool → Involution → Transformer**
-    x = layers.MaxPooling2D((2, 2))(x)
-    x = Involution(128)(x)
+    # Convolution
+    x = layers.Conv2D(128, (3, 3), activation='relu', padding='same')(x)
 
-    # **Step 4: Transformer Block**
-    x = layers.Reshape((-1, 128))(x)  # Reshape for Transformer
-    x = TransformerBlock(dim=128)(x)
+    # Transformer Block (reshape to sequence)
+    h, w = x.shape[1], x.shape[2]
+    seq = layers.Reshape((h * w, 128))(x)
+    seq = TransformerBlock(embed_dim=128, num_heads=4, ff_dim=256)(seq)
+    x = layers.Reshape((h, w, 128))(seq)
 
-    # **Step 5: Global Average Pooling → Fully Connected → Flatten**
-    x = layers.GlobalAveragePooling1D()(x)
-    x = layers.Dense(256, activation="relu")(x)
-    x = layers.Flatten()(x)
+    # Parallel Path 1: Flatten → Dense → Reshape
+    flat_path = layers.Flatten()(x)
+    flat_path = layers.Dense(128, activation='relu')(flat_path)
+    flat_path = layers.Reshape((8, 8, 2))(flat_path)
 
-    # **Step 6: Fully Connected → Output**
-    outputs = layers.Dense(num_classes, activation="softmax")(x)
+    # Parallel Path 2: Activation → Pooling → GAP → Dense → Reshape
+    alt_path = layers.Activation('relu')(x)
+    alt_path = layers.MaxPooling2D((2, 2))(alt_path)
+    alt_path = layers.Activation('relu')(alt_path)
+    alt_path = layers.MaxPooling2D((2, 2))(alt_path)
+    alt_path = layers.GlobalAveragePooling2D()(alt_path)
+    alt_path = layers.Dense(64, activation='relu')(alt_path)
+    alt_path = layers.Reshape((8, 8, 1))(alt_path)
 
-    return Model(inputs, outputs)
+    # Merge both paths
+    merged = layers.Concatenate(axis=-1)([flat_path, alt_path])
+
+    # Final output
+    output = layers.Conv2D(nclasses, (1, 1), activation='sigmoid/softmax')(merged)
+
+    model = keras.Model(inputs=inputs, outputs=outputs, name="CancerNet")
+
 
 
 
