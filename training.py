@@ -1,7 +1,7 @@
 labels = ['astro','gbm','normal','oligo']
 X_train = []
 y_train = []
-image_size = 256
+image_size = 224
 for i in labels:
     folderPath = os.path.join('/content/train',i)
     c=0
